@@ -71,3 +71,5 @@ dialog.wide { width: min(760px, 96vw); }
 .thumb { width: 96px; height: 96px; object-fit: cover; border-radius: 10px; background: var(--chip); flex: none; }
 .va canvas { width: 100%; border-radius: 10px; margin-top: 8px; }
 .va .row { gap: 6px; }
+.coachbox { white-space: pre-wrap; background: var(--chip); color: var(--ink); padding: 12px; border-radius: 10px; font-size: 15px; }
+details.card summary { cursor: pointer; }

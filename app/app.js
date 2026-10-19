@@ -37,7 +37,7 @@ function toast(msg) {
 }
 
 /* ---------- データ保存 ---------- */
-const blank = () => ({ goals: [], practices: [], matches: [], settings: { name: '', weeklyDays: 4, hand: 'right' }, frames: [] });
+const blank = () => ({ goals: [], practices: [], matches: [], settings: { name: '', weeklyDays: 4, hand: 'right' }, frames: [], coach: [] });
 let state = load();
 function load() {
   try { return Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { return blank(); }
@@ -261,6 +261,14 @@ function settingsView() {
       <select id="sDays">${[1, 2, 3, 4, 5, 6, 7].map(n => `<option ${n === +s.weeklyDays ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <div class="actions"><button class="btn" data-act="save-settings">保存</button></div>
     </div>
+    <h2>🤖 AIコーチ設定</h2>
+    <div class="card">
+      <p class="sub">AIコーチを使うための中継サーバーの設定です。手順は worker/README.md をご覧ください。合言葉はこの端末にだけ保存されます。</p>
+      <label class="l" for="aiUrl">中継サーバーのURL</label><input type="text" id="aiUrl" value="${esc((s.ai || {}).url || '')}" placeholder="https://〇〇.workers.dev" autocapitalize="off" autocomplete="off">
+      <label class="l" for="aiKey">合言葉</label><input type="password" id="aiKey" value="${esc((s.ai || {}).key || '')}" autocomplete="off">
+      <div class="actions"><button class="btn" data-act="save-ai">保存</button><button class="btn ghost" data-act="check-ai">今月の利用額を確認</button></div>
+      <div id="aiStatus" class="sub" style="margin-top:8px"></div>
+    </div>
     <h2>バックアップ</h2>
     <div class="card">
       <p class="sub">機種変更やデータ保護のため、ときどき書き出しておくと安心です。動画ファイルは含まれません(端末内にのみ保存されます)。</p>
@@ -424,7 +432,7 @@ document.addEventListener('click', e => {
       save(); render(); toast('保存しました'); break;
     case 'export': {
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' }));
+      a.href = URL.createObjectURL(new Blob([JSON.stringify({ ...state, settings: { ...state.settings, ai: undefined } }, null, 2)], { type: 'application/json' }));
       a.download = `badminton-${today()}.json`; a.click(); break;
     }
     case 'import': $('#importFile').click(); break;

@@ -116,6 +116,22 @@ function drawPose(ctx, lm, W, H, a, hand) {
   });
 }
 
+/* ---------- AIコーチ(中継サーバー経由) ---------- */
+const aiCfg = () => state.settings.ai || {};
+const aiReady = () => /^https:\/\//.test(aiCfg().url || '') && !!aiCfg().key;
+// 動画の現在のコマを、AIに送るサイズのJPEG(base64)にする
+function frameB64(video) {
+  const k = Math.min(1, 1024 / video.videoWidth), c = document.createElement('canvas');
+  c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
+  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.8).split(',')[1];
+}
+const seekTo = (v, t) => new Promise(res => {
+  if (Math.abs(v.currentTime - t) < 0.001) return res();
+  const h = () => { v.removeEventListener('seeked', h); res(); };
+  v.addEventListener('seeked', h); v.currentTime = t;
+});
+
 /* ---------- 画面(タブ) ---------- */
 function videoView() {
   const vids = [
@@ -125,7 +141,11 @@ function videoView() {
   return `<div class="card">
       <b>動画を分析する</b>
       <p class="sub">スロー再生とコマ送りで確認し、体の角度を測れます。測定は端末の中だけで行います(初回のみ通信が必要です)。</p>
-      <button class="btn block" data-act="video-pick">📂 スマホの動画を選ぶ</button>
+      <div class="cta" style="margin:0">
+        <button class="btn" data-act="video-shoot">📹 撮影して分析</button>
+        <button class="btn ghost" data-act="video-pick">📂 動画を選ぶ</button>
+      </div>
+      <input type="file" id="videoShootFile" accept="video/*" capture="environment" hidden>
       <input type="file" id="videoPickFile" accept="video/*" hidden>
     </div>
     <h2>記録に添付した動画</h2>
@@ -144,7 +164,11 @@ function videoView() {
         <div class="actions"><button class="btn sm" data-act="frame-share" data-id="${f.id}">💬 Claudeに相談</button>
         <button class="btn ghost sm" data-act="frame-dl" data-id="${f.id}">保存</button>
         <button class="btn danger sm" data-act="frame-del" data-id="${f.id}">削除</button></div></div>`).join('')
-      : `<div class="card empty">分析画面で「📸 この場面を保存」を押すと、ここに並びます。</div>`}`;
+      : `<div class="card empty">分析画面で「📸 この場面を保存」を押すと、ここに並びます。</div>`}
+    <h2>🤖 AIコーチのアドバイス</h2>
+    ${(state.coach || []).length ? state.coach.map(c => `<details class="card"><summary><b>${fmt(c.date)}</b> ${esc(c.label)}</summary>
+        <div class="coachbox" style="margin-top:8px">${esc(c.text)}</div></details>`).join('')
+      : `<div class="card empty">分析画面の「🤖 AIコーチに相談」を使うと、アドバイスがここに残ります。</div>`}`;
 }
 
 async function videoAfterRender() {
@@ -173,10 +197,14 @@ async function openAnalysis(blob, label, source) {
     <label class="l">ラケットを持つ手</label>
     <div class="chips">${[['right', '右手'], ['left', '左手']].map(([k, v]) => `<label><input type="radio" name="vaHand" value="${k}" ${k === hand ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>
     <div class="actions"><button type="button" class="btn" data-va="measure">🦴 姿勢を測る</button><button type="button" class="btn ghost" data-va="save">📸 この場面を保存</button></div>
+    <label class="l">🤖 AIコーチ</label>
+    <div class="chips">${[['scene', 'いまの場面'], ['auto', '動画から4枚を自動で']].map(([k, t], i) => `<label><input type="radio" name="vaMode" value="${k}" ${i === 0 ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
+    <div class="actions"><button type="button" class="btn" data-va="coach">🤖 AIコーチに相談</button></div>
+    <div id="vaCoach" class="sub" style="margin-top:8px"></div>
     <canvas id="vaCanvas" hidden></canvas>
     <div id="vaResult" class="sub" style="margin-top:8px">止めたい場面で一時停止し、「姿勢を測る」を押してください。複数人が写っているときは、測る人を選べます。全身が写る横向きや正面の動画だと安定します。</div>
   </div>`;
-  const $d = s => dlg.querySelector(s), video = $d('#vaVideo'), cv = $d('#vaCanvas'), res = $d('#vaResult');
+  const $d = s => dlg.querySelector(s), video = $d('#vaVideo'), cv = $d('#vaCanvas'), res = $d('#vaResult'), coachBox = $d('#vaCoach');
   let measured = null; // { t, a, summary }
   let people = [], plain = null, lastCenter = null; // 複数人: 検出した全員 / 元の画像 / 前回選んだ人の位置
   const phase = () => dlg.querySelector('input[name=vaPhase]:checked').value;
@@ -250,6 +278,39 @@ async function openAnalysis(blob, label, source) {
         } finally { b.disabled = false; }
         break;
       }
+      case 'coach': {
+        if (!aiReady()) { coachBox.innerHTML = '先に「設定」タブの「AIコーチ設定」を入力してください。'; break; }
+        if (!video.videoWidth || !isFinite(video.duration)) { toast('動画を読み込み中です'); return; }
+        if (!aiCfg().consent && !confirm('写真が外部のAIサービス(Anthropic社)に送られます。お子さんの写真が含まれるため、ご家族で確認のうえ進めてください。続けますか？')) break;
+        state.settings.ai = { ...aiCfg(), consent: true }; save();
+        b.disabled = true; video.pause();
+        coachBox.textContent = 'コーチが写真を見ています…(10〜30秒ほどかかります)';
+        try {
+          const mode = dlg.querySelector('input[name=vaMode]:checked').value;
+          const images = []; let angles = '';
+          if (mode === 'auto') {
+            const t0 = video.currentTime;
+            for (const f of [0.2, 0.4, 0.6, 0.8]) { await seekTo(video, video.duration * f); images.push(frameB64(video)); }
+            await seekTo(video, t0);
+          } else {
+            images.push(frameB64(video));
+            if (measured && Math.abs(measured.t - video.currentTime) <= 0.001) angles = measured.summary;
+          }
+          const { url, key } = aiCfg();
+          const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-key': key },
+            body: JSON.stringify({ images, phase: PHASES_VA[phase()], hand: handNow(), angles, note: '' }) });
+          const out = await r.json().catch(() => ({}));
+          if (!r.ok || !out.text) { coachBox.textContent = out.message || 'AIコーチを呼び出せませんでした。'; break; }
+          (state.coach = state.coach || []).unshift({ id: uid(), date: today(), label, text: out.text });
+          state.coach = state.coach.slice(0, 50); save();
+          coachBox.innerHTML = `<div class="coachbox">${esc(out.text)}</div>
+            <div class="sub" style="margin-top:4px">今回 約${out.thisYen}円 ／ 今月 ${out.spentYen}円 / 上限${out.budgetYen}円</div>`;
+        } catch (err) {
+          console.error(err);
+          coachBox.textContent = '通信に失敗しました。設定のURLと通信状況を確認してください。';
+        } finally { b.disabled = false; }
+        break;
+      }
       case 'save': {
         if (!video.videoWidth) { toast('動画を読み込み中です'); return; }
         video.pause();
@@ -307,6 +368,22 @@ document.addEventListener('click', async e => {
   const id = el.dataset.id;
   switch (el.dataset.act) {
     case 'video-pick': $('#videoPickFile').click(); break;
+    case 'video-shoot': $('#videoShootFile').click(); break;
+    case 'save-ai': {
+      const url = $('#aiUrl').value.trim(), key = $('#aiKey').value.trim();
+      if (url && !/^https:\/\//.test(url)) { toast('URLは https:// から始めてください'); break; }
+      state.settings.ai = { ...aiCfg(), url, key }; save(); toast('AIコーチの設定を保存しました'); break;
+    }
+    case 'check-ai': {
+      const st = $('#aiStatus');
+      if (!aiReady()) { st.textContent = '先にURLと合言葉を保存してください。'; break; }
+      st.textContent = '確認中…';
+      try {
+        const r = await fetch(aiCfg().url, { headers: { 'x-access-key': aiCfg().key } }), j = await r.json();
+        st.textContent = r.ok ? `今月の利用額: 約${j.spentYen}円 / 上限${j.budgetYen}円` : (j.message || '確認できませんでした。');
+      } catch { st.textContent = '通信に失敗しました。URLを確認してください。'; }
+      break;
+    }
     case 'video-open': {
       const o = (el.dataset.kind === 'p' ? state.practices : state.matches).find(x => x.id === id);
       openAnalysis(await VideoDB.get(o.videoId).catch(() => null), `${fmt(o.date)} ${el.dataset.kind === 'p' ? '練習' : (o.tournament || '試合')}`, el.dataset.kind + ':' + id);
@@ -323,7 +400,7 @@ document.addEventListener('click', async e => {
   }
 });
 document.addEventListener('change', e => {
-  if (e.target.id === 'videoPickFile' && e.target.files[0]) {
+  if ((e.target.id === 'videoPickFile' || e.target.id === 'videoShootFile') && e.target.files[0]) {
     const f = e.target.files[0]; e.target.value = '';
     openAnalysis(f, f.name, 'temp');
   }
