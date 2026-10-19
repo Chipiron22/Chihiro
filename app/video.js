@@ -14,7 +14,7 @@ function loadPose() {
       const mod = await import(`${POSE_CDN}/vision_bundle.mjs`);
       const files = await mod.FilesetResolver.forVisionTasks(`${POSE_CDN}/wasm`);
       return poseLandmarker = await mod.PoseLandmarker.createFromOptions(files, {
-        baseOptions: { modelAssetPath: POSE_MODEL }, runningMode: 'IMAGE', numPoses: 1,
+        baseOptions: { modelAssetPath: POSE_MODEL }, runningMode: 'IMAGE', numPoses: 4,
       });
     })().catch(e => { poseLoading = null; throw e; });
   }
@@ -63,6 +63,33 @@ function adviceFor(a, phase) {
     if (a.arm != null) out.push(a.arm >= 130 ? '腕が高く上がっています。' : '腕の上がりが低めです。打点を高くすることを意識しましょう。');
   }
   return out;
+}
+
+/* ---------- 複数人が写っているとき ---------- */
+function personBox(lm) {
+  const v = lm.filter(p => (p.visibility ?? 1) > 0.3);
+  if (!v.length) return null;
+  const xs = v.map(p => p.x), ys = v.map(p => p.y);
+  return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+}
+function personCenter(lm) {
+  const b = personBox(lm);
+  return b ? { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 } : { x: 0.5, y: 0.5 };
+}
+const boxArea = b => b ? (b.x1 - b.x0) * (b.y1 - b.y0) : 0;
+function drawBadge(ctx, lm, W, H, n, selected) {
+  const b = personBox(lm); if (!b) return;
+  const s = Math.max(2, W / 320);
+  ctx.save();
+  ctx.lineWidth = s * 1.2; ctx.strokeStyle = selected ? '#22d3ee' : 'rgba(255,255,255,.8)';
+  ctx.setLineDash(selected ? [] : [s * 3, s * 3]);
+  ctx.strokeRect(b.x0 * W, b.y0 * H, (b.x1 - b.x0) * W, (b.y1 - b.y0) * H);
+  ctx.setLineDash([]);
+  ctx.fillStyle = selected ? '#22d3ee' : '#475569';
+  const r = s * 7; ctx.beginPath(); ctx.arc(b.x0 * W + r, b.y0 * H + r, r, 0, 7); ctx.fill();
+  ctx.fillStyle = selected ? '#04211e' : '#fff'; ctx.font = `bold ${s * 8}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(String(n), b.x0 * W + r, b.y0 * H + r + 1);
+  ctx.restore();
 }
 
 const showAngle = v => v == null ? '見えていません' : v + '°';
@@ -147,10 +174,11 @@ async function openAnalysis(blob, label, source) {
     <div class="chips">${[['right', '右手'], ['left', '左手']].map(([k, v]) => `<label><input type="radio" name="vaHand" value="${k}" ${k === hand ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>
     <div class="actions"><button type="button" class="btn" data-va="measure">🦴 姿勢を測る</button><button type="button" class="btn ghost" data-va="save">📸 この場面を保存</button></div>
     <canvas id="vaCanvas" hidden></canvas>
-    <div id="vaResult" class="sub" style="margin-top:8px">止めたい場面で一時停止し、「姿勢を測る」を押してください。全身が写る横向きや正面の動画だと安定します。</div>
+    <div id="vaResult" class="sub" style="margin-top:8px">止めたい場面で一時停止し、「姿勢を測る」を押してください。複数人が写っているときは、測る人を選べます。全身が写る横向きや正面の動画だと安定します。</div>
   </div>`;
   const $d = s => dlg.querySelector(s), video = $d('#vaVideo'), cv = $d('#vaCanvas'), res = $d('#vaResult');
-  let measured = null; // { t, angles, summary }
+  let measured = null; // { t, a, summary }
+  let people = [], plain = null, lastCenter = null; // 複数人: 検出した全員 / 元の画像 / 前回選んだ人の位置
   const phase = () => dlg.querySelector('input[name=vaPhase]:checked').value;
   const handNow = () => dlg.querySelector('input[name=vaHand]:checked').value;
 
@@ -161,8 +189,38 @@ async function openAnalysis(blob, label, source) {
   };
   const step = d => { video.pause(); video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + d / 30)); };
 
+  /* i番目の人を測って結果を表示(複数人のときは選び直せる) */
+  const showPerson = (i, ask) => {
+    const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+    ctx.putImageData(plain, 0, 0);
+    if (people.length > 1) people.forEach((lm, j) => { if (j !== i) drawBadge(ctx, lm, W, H, j + 1, false); });
+    const lm = people[i], a = measurePose(lm, W, H, handNow());
+    drawPose(ctx, lm, W, H, a, handNow());
+    if (people.length > 1) drawBadge(ctx, lm, W, H, i + 1, true);
+    lastCenter = personCenter(lm);
+    measured = { t: video.currentTime, a, summary: angleSummary(a, handNow()) };
+    const picker = people.length > 1 ? `<div style="color:var(--ink)"><b>測る人: ${i + 1}番</b>${ask ? '(違う場合は番号か画像をタップして選び直してください)' : ''}</div>
+      <div class="row" style="margin:6px 0">${people.map((_, j) => `<button type="button" class="btn ${j === i ? '' : 'ghost'} sm" data-va-person="${j}">${j + 1}</button>`).join('')}</div>` : '';
+    const tips = adviceFor(a, phase());
+    res.innerHTML = `${picker}<div style="color:var(--ink)"><b>測定結果</b>
+      <div>ラケット腕のひじ: ${showAngle(a.elbow)} ／ 腕の上がり: ${showAngle(a.arm)}</div>
+      <div>左膝: ${showAngle(a.kneeL)} ／ 右膝: ${showAngle(a.kneeR)} ／ 体の傾き: ${a.trunk == null ? '見えていません' : a.trunk + '°'}</div>
+      ${tips.map(t => `<div>✅ ${esc(t)}</div>`).join('')}
+      <div class="sub" style="margin-top:6px">※目安です。カメラの角度で数値は変わります。</div></div>`;
+  };
+  // 画像をタップした位置にいる人を選ぶ
+  cv.addEventListener('click', e => {
+    if (people.length < 2) return;
+    const r = cv.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    const inside = people.map((lm, i) => ({ i, b: personBox(lm) })).filter(p => p.b && x >= p.b.x0 && x <= p.b.x1 && y >= p.b.y0 && y <= p.b.y1);
+    const best = inside.length ? inside.sort((p, q) => boxArea(p.b) - boxArea(q.b))[0].i
+      : people.map((lm, i) => ({ i, d: Math.hypot(personCenter(lm).x - x, personCenter(lm).y - y) })).sort((p, q) => p.d - q.d)[0].i;
+    showPerson(best, false);
+  });
+
   dlg.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.vaPerson) { showPerson(+b.dataset.vaPerson, false); return; }
     if (b.dataset.vaRate) { video.playbackRate = +b.dataset.vaRate; toast(`${b.dataset.vaRate}倍速`); return; }
     switch (b.dataset.va) {
       case 'close': dlg.close(); break;
@@ -175,18 +233,17 @@ async function openAnalysis(blob, label, source) {
         try {
           const pose = await loadPose();
           grab();
-          const lm = pose.detect(cv).landmarks[0];
-          if (!lm) { res.textContent = '人の姿勢を見つけられませんでした。全身が写っている場面で試してください。'; break; }
-          const a = measurePose(lm, cv.width, cv.height, handNow());
-          drawPose(cv.getContext('2d'), lm, cv.width, cv.height, a, handNow());
-          measured = { t: video.currentTime, a, summary: angleSummary(a, handNow()) };
-          const tips = adviceFor(a, phase());
+          const ctx = cv.getContext('2d');
+          plain = ctx.getImageData(0, 0, cv.width, cv.height);
+          people = pose.detect(cv).landmarks;
+          if (!people.length) { res.textContent = '人の姿勢を見つけられませんでした。全身が写っている場面で試してください。'; break; }
+          // 前回選んだ人に近い人を自動で選ぶ。初回は一番大きく写っている人
+          const ref = lastCenter;
+          const pick = people.length === 1 ? 0 : people
+            .map((lm, i) => ({ i, d: ref ? Math.hypot(personCenter(lm).x - ref.x, personCenter(lm).y - ref.y) : -boxArea(personBox(lm)) }))
+            .sort((p, q) => p.d - q.d)[0].i;
           cv.hidden = false;
-          res.innerHTML = `<div style="color:var(--ink)"><b>測定結果</b>
-            <div>ラケット腕のひじ: ${showAngle(a.elbow)} ／ 腕の上がり: ${showAngle(a.arm)}</div>
-            <div>左膝: ${showAngle(a.kneeL)} ／ 右膝: ${showAngle(a.kneeR)} ／ 体の傾き: ${a.trunk == null ? '見えていません' : a.trunk + '°'}</div>
-            ${tips.map(t => `<div>✅ ${esc(t)}</div>`).join('')}
-            <div class="sub" style="margin-top:6px">※目安です。カメラの角度で数値は変わります。</div></div>`;
+          showPerson(pick, people.length > 1 && !ref);
         } catch (err) {
           console.error(err);
           res.textContent = '姿勢の測定を準備できませんでした。通信状況を確認して、もう一度試してください。「📸 この場面を保存」は通信なしで使えます。';
