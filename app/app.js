@@ -37,7 +37,7 @@ function toast(msg) {
 }
 
 /* ---------- データ保存 ---------- */
-const blank = () => ({ goals: [], practices: [], matches: [], settings: { name: '', weeklyDays: 4 } });
+const blank = () => ({ goals: [], practices: [], matches: [], settings: { name: '', weeklyDays: 4, hand: 'right' }, frames: [] });
 let state = load();
 function load() {
   try { return Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { return blank(); }
@@ -116,13 +116,14 @@ const RES = { win: '勝ち', lose: '負け', draw: '引き分け' };
 
 /* ---------- 画面 ---------- */
 let tab = 'home', goalView = null;
-const TITLES = { home: '🏸 ロードマップ', practice: '📝 練習の記録', match: '🏆 試合の記録', goals: '🎯 目標(逆算プラン)', settings: '⚙️ 設定' };
+const TITLES = { home: '🏸 ロードマップ', practice: '📝 練習の記録', match: '🏆 試合の記録', goals: '🎯 目標(逆算プラン)', settings: '⚙️ 設定', video: '🎬 動画分析' };
 
 function render() {
   $('#title').textContent = tab === 'home' && state.settings.name ? `🏸 ${state.settings.name}のロードマップ` : TITLES[tab];
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const v = $('#view');
-  v.innerHTML = ({ home: homeView, practice: practiceView, match: matchView, goals: goalsView, settings: settingsView }[tab])();
+  v.innerHTML = ({ home: homeView, practice: practiceView, match: matchView, goals: goalsView, settings: settingsView, video: videoView }[tab])();
+  if (tab === 'video') videoAfterRender();
   window.scrollTo(0, 0);
 }
 
