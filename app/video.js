@@ -300,7 +300,10 @@ async function openAnalysis(blob, label, source) {
           const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-key': key },
             body: JSON.stringify({ images, phase: PHASES_VA[phase()], hand: handNow(), angles, note: '' }) });
           const out = await r.json().catch(() => ({}));
-          if (!r.ok || !out.text) { coachBox.textContent = out.message || 'AIコーチを呼び出せませんでした。'; break; }
+          if (!r.ok || !out.text) {
+            coachBox.innerHTML = `<div>${esc(out.message || 'AIコーチを呼び出せませんでした。')}</div>${out.detail ? `<div class="detail">詳細: ${esc(out.detail)}</div>` : ''}`;
+            break;
+          }
           (state.coach = state.coach || []).unshift({ id: uid(), date: today(), label, text: out.text });
           state.coach = state.coach.slice(0, 50); save();
           coachBox.innerHTML = `<div class="coachbox">${esc(out.text)}</div>

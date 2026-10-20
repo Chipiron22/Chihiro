@@ -82,18 +82,18 @@ export default {
       'この写真から、フォームの良いところと直すところを教えてください。',
     ].filter((l, i, a) => l !== '' || a[i - 1] !== '').join('\n');
 
-    const upstream = await fetch(API_URL, {
+    const call = withFallback => fetch(API_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-api-key': env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'server-side-fallback-2026-07-01',
+        ...(withFallback ? { 'anthropic-beta': 'server-side-fallback-2026-07-01' } : {}),
       },
       body: JSON.stringify({
         model: MODEL,
         max_tokens: MAX_TOKENS,
-        fallbacks: 'default',
+        ...(withFallback ? { fallbacks: 'default' } : {}),
         output_config: { effort: 'medium' },
         system: SYSTEM,
         messages: [{
@@ -106,14 +106,24 @@ export default {
       }),
     });
 
-    const data = await upstream.json().catch(() => null);
+    let upstream = await call(true);
+    let data = await upstream.json().catch(() => null);
+    // 予備モデルへの切り替え設定が通らない場合は、その設定なしでもう一度試す
+    if (upstream.status === 400 && /fallback|beta/i.test((data && data.error && data.error.message) || '')) {
+      upstream = await call(false);
+      data = await upstream.json().catch(() => null);
+    }
     if (!upstream.ok || !data) {
       const code = data && data.error && data.error.type;
-      const msg = data && data.error && data.error.message || '';
+      const msg = (data && data.error && data.error.message) || '';
       if (/reached your specified/i.test(msg) || (data && data.error && data.error.details && data.error.details.error_code === 'enforced_spend_limit_reached')) {
         return json({ error: 'budget', message: 'Anthropic側の利用上限に達しました。', spentYen: round1(spent), budgetYen: budget }, 429);
       }
-      return json({ error: 'upstream', message: 'AIコーチを呼び出せませんでした。時間をおいてもう一度お試しください。', detail: code || upstream.status }, 502);
+      return json({
+        error: 'upstream',
+        message: 'AIコーチを呼び出せませんでした。時間をおいてもう一度お試しください。',
+        detail: `${upstream.status} ${code || ''} ${msg}`.trim().slice(0, 300),
+      }, 502);
     }
 
     // 利用額を記録(失敗しても結果は返す)
