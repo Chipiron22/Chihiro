@@ -140,6 +140,47 @@ const seekTo = (v, t) => new Promise(res => {
   v.addEventListener('seeked', h); v.currentTime = t;
 });
 
+/* ---------- 参考動画の検索リンク ---------- */
+const PRACTICE_QUERIES = [
+  [/フットワーク/, 'バドミントン フットワーク 小学生 練習'],
+  [/素振り|グリップ/, 'バドミントン グリップ 素振り 初心者 小学生'],
+  [/体幹|柔軟/, 'バドミントン 体幹トレーニング ジュニア'],
+  [/クリア|ドロップ|スマッシュ/, 'バドミントン クリア ドロップ スマッシュ 打ち分け 練習'],
+  [/ネット前|ヘアピン/, 'バドミントン ヘアピン ネット前 練習'],
+  [/レシーブ|守備/, 'バドミントン レシーブ 守備 練習 ジュニア'],
+  [/ゲーム練習|ラリー/, 'バドミントン ゲーム練習 ラリー 組み立て'],
+  [/動画|振り返り/, 'バドミントン 試合 分析 振り返り 方法'],
+  [/パターン/, 'バドミントン 得意パターン 配球'],
+  [/サーブ/, 'バドミントン サーブ レシーブ 練習 小学生'],
+  [/睡眠|食事|体調/, 'スポーツ 子ども 試合前 食事 睡眠'],
+  [/イメージ|軽め/, 'バドミントン 試合前日 調整 イメージトレーニング'],
+];
+function practiceQuery(text) {
+  const t = String(text).replace(/^【.*?】/, '');
+  const hit = PRACTICE_QUERIES.find(([re]) => re.test(t));
+  return hit ? hit[1] : `バドミントン 小学生 ${t}`;
+}
+const ytUrl = q => 'https://www.youtube.com/results?search_query=' + encodeURIComponent(q);
+const gUrl = q => 'https://www.google.com/search?q=' + encodeURIComponent(q);
+const searchButtons = q => `<a class="btn ghost sm" href="${esc(ytUrl(q))}" target="_blank" rel="noopener noreferrer">▶ YouTubeで探す</a> <a class="btn ghost sm" href="${esc(gUrl(q))}" target="_blank" rel="noopener noreferrer">🔍 Googleで探す</a>`;
+const menuCards = menus => (menus || []).length ? `<div style="margin-top:12px"><b>📚 次の練習メニュー</b>${menus.map(m => `<div class="card" style="margin:8px 0 0;padding:12px"><div><b>${esc(m.name)}</b></div><div class="sub">検索: ${esc(m.query)}</div><div class="links">${searchButtons(m.query)}</div></div>`).join('')}</div>` : '';
+
+function linkForm() {
+  const f = openForm(`<h3>参考リンクを保存</h3>
+    <label class="l">タイトル</label><input type="text" name="title" placeholder="例: ヘアピンの基本" required>
+    <label class="l">リンク(URL)</label><input type="text" name="url" inputmode="url" placeholder="https://" autocapitalize="off" required>
+    <label class="l">メモ</label><textarea name="note" placeholder="例: 毎日5分やる"></textarea>
+    <div class="actions"><button type="button" class="btn ghost" data-close>やめる</button><button class="btn">保存</button></div>`);
+  f.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(f), url = fd.get('url').trim();
+    if (!/^https?:\/\//i.test(url)) { toast('リンクは https:// から始めてください'); return; }
+    (state.links = state.links || []).unshift({ id: uid(), title: fd.get('title').trim(), url, note: fd.get('note').trim(), date: today() });
+    save(); closeForm(); render(); toast('リンクを保存しました');
+  };
+  f.addEventListener('click', e => { if (e.target.matches('[data-close]')) closeForm(); });
+}
+
 /* ---------- 画面(タブ) ---------- */
 function videoView() {
   const vids = [
@@ -173,9 +214,15 @@ function videoView() {
         <button class="btn ghost sm" data-act="frame-dl" data-id="${f.id}">保存</button>
         <button class="btn danger sm" data-act="frame-del" data-id="${f.id}">削除</button></div></div>`).join('')
       : `<div class="card empty">分析画面で「📸 この場面を保存」を押すと、ここに並びます。</div>`}
+    <h2>🔖 参考リンク</h2>
+    <div class="card">
+      <p class="sub">見つけた練習動画やページのリンクを、メモつきで保存できます。</p>
+      ${(state.links || []).map(l => `<div class="ms"><div class="grow"><a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer"><b>${esc(l.title)}</b></a>${l.note ? `<div class="sub">${esc(l.note)}</div>` : ''}<div class="sub">${fmt(l.date)}</div></div><button class="btn ghost sm" data-act="link-del" data-id="${l.id}" aria-label="削除">✕</button></div>`).join('')}
+      <button class="btn ghost block" data-act="link-add" style="margin-top:8px">＋ リンクを追加</button>
+    </div>
     <h2>🤖 AIコーチのアドバイス</h2>
     ${(state.coach || []).length ? state.coach.map(c => `<details class="card"><summary><b>${fmt(c.date)}</b> ${esc(c.label)}</summary>
-        <div class="coachbox" style="margin-top:8px">${esc(c.text)}</div></details>`).join('')
+        <div class="coachbox" style="margin-top:8px">${esc(c.text)}</div>${menuCards(c.menus)}</details>`).join('')
       : `<div class="card empty">分析画面の「🤖 AIコーチに相談」を使うと、アドバイスがここに残ります。</div>`}`;
 }
 
@@ -352,9 +399,9 @@ async function openAnalysis(blob, label, source) {
             coachBox.innerHTML = `<div>${esc(out.message || 'AIコーチを呼び出せませんでした。')}</div>${out.detail ? `<div class="detail">詳細: ${esc(out.detail)}</div>` : ''}`;
             break;
           }
-          (state.coach = state.coach || []).unshift({ id: uid(), date: today(), label, text: out.text });
+          (state.coach = state.coach || []).unshift({ id: uid(), date: today(), label, text: out.text, menus: out.menus || [] });
           state.coach = state.coach.slice(0, 50); save();
-          coachBox.innerHTML = `<div class="coachbox">${esc(out.text)}</div>
+          coachBox.innerHTML = `<div class="coachbox">${esc(out.text)}</div>${menuCards(out.menus)}
             <div class="sub" style="margin-top:4px">今回 約${out.thisYen}円 ／ 今月 ${out.spentYen}円 / 上限${out.budgetYen}円</div>`;
         } catch (err) {
           console.error(err);
@@ -420,6 +467,10 @@ document.addEventListener('click', async e => {
   switch (el.dataset.act) {
     case 'video-pick': $('#videoPickFile').click(); break;
     case 'video-shoot': $('#videoShootFile').click(); break;
+    case 'link-add': linkForm(); break;
+    case 'link-del':
+      if (confirm('このリンクを削除しますか？')) { state.links = state.links.filter(l => l.id !== id); save(); render(); }
+      break;
     case 'save-ai': {
       const url = $('#aiUrl').value.trim(), key = $('#aiKey').value.trim();
       if (url && !/^https:\/\//.test(url)) { toast('URLは https:// から始めてください'); break; }

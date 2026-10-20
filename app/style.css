@@ -77,3 +77,5 @@ dialog.wide { width: min(760px, 96vw); }
 .va .actions { margin-top: 14px; }
 .va .detail { margin-top: 8px; font-size: 13px; color: var(--sub); word-break: break-all; }
 details.card summary { cursor: pointer; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+.links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

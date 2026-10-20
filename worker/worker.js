@@ -20,11 +20,19 @@ const SYSTEM = `あなたは小学生のバドミントン選手を教えるコ�
 角度の数値が添えられている場合は、カメラの向きで変わる目安として扱ってください。
 写真に複数人が写っている場合は、分析する人として指定された1人だけを見てください。他の人にはふれないでください。指定がないときは、いちばん大きく写っている1人を対象にし、最初に「○○の子を見ました」と一言伝えてください。
 
-次の形で、全体を600文字以内にまとめてください。
+次の形で、###MENUより前を600文字以内にまとめてください。
 【良いところ】2つ
 【直すところ】3つ(大切な順。1つずつ理由を短く添える)
 【おうちでできる練習】1つ(道具が少なく、安全にできるもの)
 【ひとこと】前向きに終わる励ましの言葉
+
+回答の最後に、次の形式で3行だけ書いてください。
+###MENU
+メニュー名｜検索キーワード
+メニュー名｜検索キーワード
+メニュー名｜検索キーワード
+###END
+メニュー名は15文字以内にします。検索キーワードは「バドミントン」を含め、小学生向けの練習動画が見つかる3〜5語を、半角スペースで区切ります。直すところに合ったメニューにしてください。URLは書かないでください。
 
 注意:
 - 成長期なので、無理な回数や負担の大きい練習は勧めないでください。
@@ -142,10 +150,22 @@ export default {
     }
     const answer = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
     if (!answer) return json({ error: 'empty', message: '回答を受け取れませんでした。もう一度お試しください。', spentYen: round1(total), budgetYen: budget }, 502);
-    return json({ text: answer, thisYen: round1(yen), spentYen: round1(total), budgetYen: budget });
+    const { text: advice, menus } = splitMenus(answer);
+    return json({ text: advice, menus, thisYen: round1(yen), spentYen: round1(total), budgetYen: budget });
   },
 };
 
+// 「###MENU」以降の「メニュー名｜検索キーワード」を取り出す
+function splitMenus(answer) {
+  const i = answer.indexOf('###MENU');
+  if (i < 0) return { text: answer, menus: [] };
+  const menus = answer.slice(i + 7).split('###END')[0].split('\n')
+    .map(l => l.trim().split(/[｜|]/).map(s => s.trim()))
+    .filter(p => p[0] && p[1])
+    .slice(0, 3)
+    .map(([name, query]) => ({ name: name.slice(0, 30), query: query.slice(0, 80) }));
+  return { text: answer.slice(0, i).trim(), menus };
+}
 const round1 = n => Math.round(n * 10) / 10;
 const clip = (s, n) => (typeof s === 'string' ? s.slice(0, n) : '');
 // 日本時間の「年-月」

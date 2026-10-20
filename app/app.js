@@ -37,7 +37,7 @@ function toast(msg) {
 }
 
 /* ---------- データ保存 ---------- */
-const blank = () => ({ goals: [], practices: [], matches: [], settings: { name: '', weeklyDays: 4, hand: 'right' }, frames: [], coach: [] });
+const blank = () => ({ goals: [], practices: [], matches: [], settings: { name: '', weeklyDays: 4, hand: 'right' }, frames: [], coach: [], links: [] });
 let state = load();
 function load() {
   try { return Object.assign(blank(), JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { return blank(); }
@@ -243,7 +243,7 @@ function goalDetail(g) {
     <h2>やることリスト</h2>
     <div class="card">${ms.length ? ms.map(m => `<div class="ms ${m.done ? 'done' : ''}">
         <input type="checkbox" data-act="toggle-ms" data-id="${m.id}" ${m.done ? 'checked' : ''} aria-label="完了">
-        <div class="grow"><div class="t">${esc(m.text)}</div><div class="sub ${!m.done && m.due < t ? 'over' : ''}">${fmt(m.due)}まで</div></div>
+        <div class="grow"><div class="t">${esc(m.text)}</div><div class="sub ${!m.done && m.due < t ? 'over' : ''}">${fmt(m.due)}まで</div><div class="links">${searchButtons(practiceQuery(m.text))}</div></div>
         <button class="btn ghost sm" data-act="del-ms" data-id="${m.id}" aria-label="削除">✕</button></div>`).join('') : '<div class="empty">まだありません</div>'}
       <div class="row" style="margin-top:10px"><input type="text" id="msText" placeholder="自分のやることを追加" class="grow">
       <input type="date" id="msDue" value="${g.date}" style="width:140px"><button class="btn sm" data-act="add-ms">追加</button></div>
