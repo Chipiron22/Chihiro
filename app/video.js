@@ -119,11 +119,19 @@ function drawPose(ctx, lm, W, H, a, hand) {
 /* ---------- AIコーチ(中継サーバー経由) ---------- */
 const aiCfg = () => state.settings.ai || {};
 const aiReady = () => /^https:\/\//.test(aiCfg().url || '') && !!aiCfg().key;
-// 動画の現在のコマを、AIに送るサイズのJPEG(base64)にする
-function frameB64(video) {
-  const k = Math.min(1, 1024 / video.videoWidth), c = document.createElement('canvas');
-  c.width = Math.round(video.videoWidth * k); c.height = Math.round(video.videoHeight * k);
-  c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+// 動画の現在のコマを、AIに送るサイズのJPEG(base64)にする。rect(0〜1の割合)があれば、その枠の周りだけを切り抜く
+function frameB64(video, rect) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  let sx = 0, sy = 0, sw = vw, sh = vh;
+  if (rect) {
+    const m = 0.08; // 枠の周りに少しゆとりを持たせる
+    const x0 = Math.max(0, rect.x - rect.w * m), y0 = Math.max(0, rect.y - rect.h * m);
+    const x1 = Math.min(1, rect.x + rect.w * (1 + m)), y1 = Math.min(1, rect.y + rect.h * (1 + m));
+    sx = x0 * vw; sy = y0 * vh; sw = (x1 - x0) * vw; sh = (y1 - y0) * vh;
+  }
+  const k = Math.min(1, 1024 / Math.max(sw, sh)), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+  c.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', 0.8).split(',')[1];
 }
 const seekTo = (v, t) => new Promise(res => {
@@ -198,7 +206,12 @@ async function openAnalysis(blob, label, source) {
     <div class="chips">${[['right', '右手'], ['left', '左手']].map(([k, v]) => `<label><input type="radio" name="vaHand" value="${k}" ${k === hand ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>
     <div class="actions"><button type="button" class="btn" data-va="measure">🦴 姿勢を測る</button><button type="button" class="btn ghost" data-va="save">📸 この場面を保存</button></div>
     <label class="l">🤖 AIコーチ</label>
-    <div class="chips">${[['scene', 'いまの場面'], ['auto', '動画から4枚を自動で']].map(([k, t], i) => `<label><input type="radio" name="vaMode" value="${k}" ${i === 0 ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
+    <label class="l" for="vaTarget" style="margin-top:4px">分析する子の目印</label>
+    <input type="text" id="vaTarget" placeholder="例: 赤いシャツ・右側のコート" value="${esc(state.settings.target || '')}">
+    <div class="actions"><button type="button" class="btn ghost" data-va="pick">🎯 分析する子を枠で囲む</button></div>
+    <canvas id="vaPick" hidden></canvas>
+    <div id="vaCrop" class="sub"></div>
+    <div class="chips" style="margin-top:12px">${[['scene', 'いまの場面'], ['auto', '動画から4枚を自動で']].map(([k, t], i) => `<label><input type="radio" name="vaMode" value="${k}" ${i === 0 ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
     <div class="actions"><button type="button" class="btn" data-va="coach">🤖 AIコーチに相談</button></div>
     <div id="vaCoach" class="sub" style="margin-top:8px"></div>
     <canvas id="vaCanvas" hidden></canvas>
@@ -206,6 +219,7 @@ async function openAnalysis(blob, label, source) {
   </div>`;
   const $d = s => dlg.querySelector(s), video = $d('#vaVideo'), cv = $d('#vaCanvas'), res = $d('#vaResult'), coachBox = $d('#vaCoach');
   let measured = null; // { t, a, summary }
+  let cropRect = null, pickBase = null; // 分析する子の枠(0〜1の割合)
   let people = [], plain = null, lastCenter = null; // 複数人: 検出した全員 / 元の画像 / 前回選んだ人の位置
   const phase = () => dlg.querySelector('input[name=vaPhase]:checked').value;
   const handNow = () => dlg.querySelector('input[name=vaHand]:checked').value;
@@ -278,6 +292,38 @@ async function openAnalysis(blob, label, source) {
         } finally { b.disabled = false; }
         break;
       }
+      case 'pick': {
+        if (!video.videoWidth) { toast('動画を読み込み中です'); return; }
+        video.pause();
+        const pk = $d('#vaPick'), k = Math.min(1, 1024 / video.videoWidth);
+        pk.width = Math.round(video.videoWidth * k); pk.height = Math.round(video.videoHeight * k);
+        const ctx = pk.getContext('2d'); ctx.drawImage(video, 0, 0, pk.width, pk.height);
+        pickBase = ctx.getImageData(0, 0, pk.width, pk.height);
+        pk.hidden = false; pk.style.touchAction = 'none'; pk.style.cursor = 'crosshair';
+        cropRect = null;
+        $d('#vaCrop').textContent = '分析する子を、指でなぞって四角く囲んでください。';
+        const pt = ev => { const r = pk.getBoundingClientRect(); return { x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) }; };
+        const box = (a, c) => ({ x: Math.min(a.x, c.x), y: Math.min(a.y, c.y), w: Math.abs(a.x - c.x), h: Math.abs(a.y - c.y) });
+        const paint = r => {
+          ctx.putImageData(pickBase, 0, 0);
+          if (!r) return;
+          ctx.fillStyle = 'rgba(245,158,11,.2)'; ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = Math.max(3, pk.width / 200);
+          ctx.fillRect(r.x * pk.width, r.y * pk.height, r.w * pk.width, r.h * pk.height);
+          ctx.strokeRect(r.x * pk.width, r.y * pk.height, r.w * pk.width, r.h * pk.height);
+        };
+        let from = null;
+        pk.onpointerdown = ev => { pk.setPointerCapture(ev.pointerId); from = pt(ev); };
+        pk.onpointermove = ev => { if (from) paint(box(from, pt(ev))); };
+        pk.onpointerup = ev => {
+          if (!from) return;
+          const r = box(from, pt(ev)); from = null;
+          if (r.w < 0.05 || r.h < 0.08) { paint(null); $d('#vaCrop').textContent = '枠が小さすぎます。もう少し大きく囲んでください。'; return; }
+          cropRect = r; paint(r);
+          $d('#vaCrop').innerHTML = '✅ 枠を設定しました。AIにはこの枠の中だけを送ります。<br>動画から4枚を自動で使うときは、動いても入る、少し大きめの枠にしてください。 <button type="button" class="btn ghost sm" data-va="unpick">枠を解除</button>';
+        };
+        break;
+      }
+      case 'unpick': cropRect = null; $d('#vaPick').hidden = true; $d('#vaCrop').textContent = '枠を解除しました。'; break;
       case 'coach': {
         if (!aiReady()) { coachBox.innerHTML = '先に「設定」タブの「AIコーチ設定」を入力してください。'; break; }
         if (!video.videoWidth || !isFinite(video.duration)) { toast('動画を読み込み中です'); return; }
@@ -290,15 +336,17 @@ async function openAnalysis(blob, label, source) {
           const images = []; let angles = '';
           if (mode === 'auto') {
             const t0 = video.currentTime;
-            for (const f of [0.2, 0.4, 0.6, 0.8]) { await seekTo(video, video.duration * f); images.push(frameB64(video)); }
+            for (const f of [0.2, 0.4, 0.6, 0.8]) { await seekTo(video, video.duration * f); images.push(frameB64(video, cropRect)); }
             await seekTo(video, t0);
           } else {
-            images.push(frameB64(video));
+            images.push(frameB64(video, cropRect));
             if (measured && Math.abs(measured.t - video.currentTime) <= 0.001) angles = measured.summary;
           }
           const { url, key } = aiCfg();
+          const target = $d('#vaTarget').value.trim();
+          state.settings.target = target; save();
           const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-access-key': key },
-            body: JSON.stringify({ images, phase: PHASES_VA[phase()], hand: handNow(), angles, note: '' }) });
+            body: JSON.stringify({ images, phase: PHASES_VA[phase()], hand: handNow(), angles, note: '', target, cropped: !!cropRect }) });
           const out = await r.json().catch(() => ({}));
           if (!r.ok || !out.text) {
             coachBox.innerHTML = `<div>${esc(out.message || 'AIコーチを呼び出せませんでした。')}</div>${out.detail ? `<div class="detail">詳細: ${esc(out.detail)}</div>` : ''}`;
